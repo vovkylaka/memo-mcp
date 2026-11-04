@@ -30,8 +30,17 @@ const Note = z.object({
   id: z.string(),
   text: z.string(),
   created_at: z.string().describe("ISO 8601 time the note was saved"),
-  author: z.string().nullable().describe("OAuth client that saved the note"),
+  truncated: z.boolean().optional().describe("Present when the text was cut to keep the result small"),
 });
+
+// Results go out twice (structuredContent and the same JSON as text) plus ~200 B of envelope;
+// clients like the course cap a result at 1024 B.
+const SEARCH_BUDGET = 360;
+function cutToBytes(s, max) {
+  let out = s;
+  while (Buffer.byteLength(JSON.stringify(out)) > Math.max(max, 8)) out = out.slice(0, Math.floor(out.length * 0.9));
+  return out;
+}
 
 function buildServer(ctx) {
   const author = ctx?.authInfo?.clientId ?? null;
@@ -56,9 +65,12 @@ function buildServer(ctx) {
     description: "Finds saved notes whose text contains every word of the query (case-insensitive), newest first. An empty query lists the newest notes. A note id also matches.",
     inputSchema: z.object({
       query: z.string().max(500).describe("Words to look for; empty lists the newest notes"),
-      limit: z.number().int().min(1).max(100).optional().describe("Most notes to return (default 20)"),
+      limit: z.number().int().min(1).max(100).optional().describe("Most notes to return (default 5; results are kept small)"),
     }),
-    outputSchema: z.object({ notes: z.array(Note) }),
+    outputSchema: z.object({
+      notes: z.array(Note),
+      more: z.boolean().describe("True when more notes match than fit in this result; search more narrowly or with a note id"),
+    }),
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, async ({ query, limit }) => {
     const words = String(query || "").trim().split(/\s+/).filter(Boolean).slice(0, 10);
@@ -66,9 +78,29 @@ function buildServer(ctx) {
     const conds = words.map((w) => { params.push(`%${w.replace(/[\\%_]/g, "\\$&")}%`); return `text ilike $${params.length}`; });
     let where = conds.length ? conds.join(" and ") : "true";
     if (words.length === 1) { params.push(words[0]); where = `(${where}) or id = $${params.length}`; }
-    params.push(limit ?? 20);
-    const { rows } = await q(`select id, text, author, created_at from memos where ${where} order by created_at desc limit $${params.length}`, params);
-    return result({ notes: rows.map((r) => ({ id: r.id, text: r.text, created_at: r.created_at.toISOString(), author: r.author })) });
+    params.push((limit ?? 5) + 1);
+    const { rows } = await q(`select id, text, created_at from memos where ${where} order by created_at desc limit $${params.length}`, params);
+    // Keep the whole result under ~1 KB (it travels twice: structured and as text). Take the newest
+    // notes that fit; cut a note that alone is too long; `more` says something was left out.
+    const notes = [];
+    let used = 0;
+    let more = rows.length > (limit ?? 5);
+    for (const r of rows.slice(0, limit ?? 5)) {
+      const note = { id: r.id, text: r.text, created_at: r.created_at.toISOString() };
+      const size = Buffer.byteLength(JSON.stringify(note)) + 1;
+      if (used + size > SEARCH_BUDGET) {
+        if (notes.length === 0) {
+          note.text = cutToBytes(note.text, SEARCH_BUDGET - (size - Buffer.byteLength(JSON.stringify(note.text))) - 8) + "…";
+          note.truncated = true;
+          notes.push(note);
+        }
+        more = true;
+        break;
+      }
+      notes.push(note);
+      used += size;
+    }
+    return result({ notes, more });
   });
 
   server.registerTool("upload", {
@@ -114,7 +146,6 @@ function buildServer(ctx) {
         end: z.number().nullable().describe("End, in seconds"),
         text: z.string(),
       })),
-      text: z.string().describe("The whole transcript"),
       duration: z.number().describe("Audio length in seconds"),
       language: z.string().nullable().describe("Detected language code, e.g. en"),
     }),

@@ -5,9 +5,9 @@ A personal remote MCP server with four tools, behind OAuth:
 | Tool | Input | Result |
 |---|---|---|
 | `memo_write` | `{ text }` | `{ id, created_at }` |
-| `memo_search` | `{ query, limit? }` | `{ notes: [{ id, text, created_at, author }] }` |
+| `memo_search` | `{ query, limit? }` | `{ notes: [{ id, text, created_at, truncated? }], more }` |
 | `upload` | `{ filename, content_base64 \| text \| source_url, content_type? }` | `{ url, id, filename, size, content_type }` |
-| `transcribe` | `{ url }` | `{ segments: [{ start, end, text }], text, duration, language }` |
+| `transcribe` | `{ url }` | `{ segments: [{ start, end, text }], duration, language }` |
 
 - MCP revision 2026-07-28 over Streamable HTTP (older clients are served statelessly), via the MCP TypeScript SDK v2.
 - Its own OAuth 2.1 authorization server on the same host: Client ID Metadata Documents or Dynamic Client Registration, PKCE S256, RFC 8707 resource-bound tokens. The consent page asks for `OWNER_PASSWORD`, so only the owner can let a client in.

@@ -60,7 +60,6 @@ export function transcribe(bytes) {
         .filter((s) => s.text && !/^\[.*\]$/.test(s.text)); // drop [BLANK_AUDIO]-style markers
       return {
         segments,
-        text: segments.map((s) => s.text).join(" "),
         duration: Number(duration.toFixed(2)),
         language: out.result?.language || null,
       };
