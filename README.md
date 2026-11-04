@@ -11,7 +11,7 @@ A personal remote MCP server with four tools, behind OAuth:
 
 - MCP revision 2026-07-28 over Streamable HTTP (older clients are served statelessly), via the MCP TypeScript SDK v2.
 - Its own OAuth 2.1 authorization server on the same host: Client ID Metadata Documents or Dynamic Client Registration, PKCE S256, RFC 8707 resource-bound tokens. The consent page asks for `OWNER_PASSWORD`, so only the owner can let a client in.
-- Speech-to-text runs locally with whisper.cpp (base model) and ffmpeg.
+- Speech-to-text runs locally with whisper.cpp (tiny model, greedy decoding) and ffmpeg.
 - Notes and files live in Postgres (`DATABASE_URL`).
 - The plan page at `/plan` describes the tools, the sign-in and the data kept.
 

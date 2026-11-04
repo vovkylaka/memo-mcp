@@ -127,16 +127,31 @@ function buildServer(ctx) {
   return server;
 }
 
+// Fails fast, before the transcription queue, when the URL is not audio: a slow queue
+// must never turn "this is a web page" into a timeout.
 async function loadAudio(url) {
   const own = url.startsWith(`${BASE}/files/`) ? url.slice(BASE.length + 7).split("/")[0] : null;
+  let data, type;
   if (own) {
-    const { rows } = await q("select data from files where id = $1", [own]);
-    if (!rows[0]) throw new Error("no such uploaded file");
-    return rows[0].data;
+    const { rows } = await q("select data, content_type from files where id = $1", [own]);
+    if (!rows[0]) throw new Error(`no uploaded file with id ${own} on this server`);
+    ({ data, content_type: type } = rows[0]);
+  } else {
+    let res;
+    try {
+      res = await safeFetch(url, { maxBytes: 25 * 1024 * 1024, timeoutMs: 20000 });
+    } catch (e) {
+      throw new Error(`could not download ${url}: ${e.message}`);
+    }
+    if (res.status !== 200) throw new Error(`could not download ${url}: the server answered HTTP ${res.status}, expected 200 with an audio file`);
+    ({ body: data, contentType: type } = res);
   }
-  const res = await safeFetch(url, { maxBytes: 25 * 1024 * 1024, timeoutMs: 60000 });
-  if (res.status !== 200) throw new Error(`the audio URL answered HTTP ${res.status}`);
-  return res.body;
+  const head = data.subarray(0, 512).toString("latin1").trimStart().toLowerCase();
+  if (/^text\/html|^application\/(xhtml|json)/.test(type || "") || head.startsWith("<!doctype html") || head.startsWith("<html")) {
+    throw new Error(`${url} is a web page (${(type || "text/html").split(";")[0]}), not an audio file. Give a direct link to audio such as .mp3, .wav, .m4a or .ogg.`);
+  }
+  if (!data.length) throw new Error(`${url} is empty`);
+  return data;
 }
 
 function guessType(name, isText) {
