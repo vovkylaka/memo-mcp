@@ -264,7 +264,7 @@ ${error ? `<p class="err">${esc(error)}</p>` : ""}
   setInterval(() => {
     const now = Date.now();
     for (const [k, v] of pending) if (v.until < now) pending.delete(k);
-    q("delete from oauth_codes where expires_at < now(); delete from oauth_tokens where expires_at < now()").catch(() => {});
+    q("delete from oauth_codes where expires_at < now(); delete from oauth_tokens where expires_at < now(); delete from upload_slots where expires_at < now()").catch(() => {});
   }, 10 * 60 * 1000).unref();
 
   return r;

@@ -5,7 +5,7 @@ import * as z from "zod";
 import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";
 import { requireBearerAuth } from "@modelcontextprotocol/express";
 import { toNodeHandler } from "@modelcontextprotocol/node";
-import { migrate, q } from "./db.mjs";
+import { migrate, q, saveFile, fileMeta, fileChunks, readFile } from "./db.mjs";
 import { oauthRouter, verifier, asMetadata, SCOPE } from "./oauth.mjs";
 import { safeFetch } from "./net.mjs";
 import { transcribe, MODEL } from "./transcribe.mjs";
@@ -17,6 +17,8 @@ const RESOURCE = `${BASE}/mcp`;
 const PRM_URL = `${BASE}/.well-known/oauth-protected-resource/mcp`;
 const MAX_FILE = 10 * 1024 * 1024;
 const MAX_BODY = 16 * 1024 * 1024;
+const MAX_PUT = 50 * 1024 * 1024; // files sent to a one-time upload_url
+const fileUrl = (id, name) => `${BASE}/files/${id}/${encodeURIComponent(name)}`;
 const NAME = "memo-mcp";
 const VERSION = "1.0.0";
 
@@ -105,7 +107,7 @@ function buildServer(ctx) {
 
   server.registerTool("upload", {
     title: "Upload a file",
-    description: `Stores a file on this server and returns a public link anyone can open. Give the file as base64 (content_base64), as plain text (text), or as a URL to copy (source_url). Up to ${MAX_FILE / 1024 / 1024} MB.`,
+    description: `Stores a file on this server and returns a public link anyone can open. Give the file as base64 (content_base64), as plain text (text), or as a URL to copy (source_url), up to ${MAX_FILE / 1024 / 1024} MB. For a bigger or local file (up to ${MAX_PUT / 1024 / 1024} MB), give only the filename: the result has a one-time upload_url; send the bytes there with HTTP PUT (e.g. curl -T file "<upload_url>") within 15 minutes, and the file appears at url.`,
     inputSchema: z.object({
       filename: z.string().min(1).max(200).describe("File name, e.g. clip.mp3"),
       content_base64: z.string().optional().describe("File bytes, base64-encoded"),
@@ -113,11 +115,28 @@ function buildServer(ctx) {
       source_url: z.string().url().optional().describe("An http(s) URL to copy the file from"),
       content_type: z.string().max(100).optional().describe("MIME type; guessed from the file name if left out"),
     }),
-    outputSchema: z.object({ url: z.string(), id: z.string(), filename: z.string(), size: z.number(), content_type: z.string() }),
+    outputSchema: z.object({
+      url: z.string().describe("Public link to the file"),
+      id: z.string(),
+      filename: z.string(),
+      size: z.number().describe("Bytes stored; 0 until a PUT to upload_url arrives"),
+      content_type: z.string(),
+      upload_url: z.string().optional().describe("Only when no content was given: PUT the file bytes here, once, within 15 minutes"),
+      expires_at: z.string().optional().describe("When upload_url stops working"),
+    }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async ({ filename, content_base64, text, source_url, content_type }) => {
     const given = [content_base64, text, source_url].filter((v) => v != null).length;
-    if (given !== 1) throw new Error("give exactly one of content_base64, text or source_url");
+    if (given > 1) throw new Error("give only one of content_base64, text or source_url (or none, for an upload_url)");
+    if (given === 0) {
+      const name = safeName(filename);
+      const type = (content_type || guessType(name, false)).slice(0, 100);
+      const id = newId("f");
+      const token = crypto.randomBytes(24).toString("base64url");
+      const { rows } = await q("insert into upload_slots (token_hash, file_id, name, content_type, expires_at) values ($1,$2,$3,$4, now() + interval '15 minutes') returning expires_at",
+        [crypto.createHash("sha256").update(token).digest("base64url"), id, name, type]);
+      return result({ url: fileUrl(id, name), id, filename: name, size: 0, content_type: type, upload_url: `${BASE}/uploads/${token}`, expires_at: rows[0].expires_at.toISOString() });
+    }
     let data;
     let fetchedType = "";
     if (content_base64 != null) data = Buffer.from(content_base64.replace(/^data:[^,]*,/, ""), "base64");
@@ -132,8 +151,8 @@ function buildServer(ctx) {
     const name = safeName(filename);
     const type = (content_type || fetchedType || guessType(name, text != null)).slice(0, 100);
     const id = newId("f");
-    await q("insert into files (id, name, content_type, size, data) values ($1,$2,$3,$4,$5)", [id, name, type, data.length, data]);
-    return result({ url: `${BASE}/files/${id}/${encodeURIComponent(name)}`, id, filename: name, size: data.length, content_type: type });
+    await saveFile({ id, name, contentType: type, data });
+    return result({ url: fileUrl(id, name), id, filename: name, size: data.length, content_type: type });
   });
 
   server.registerTool("transcribe", {
@@ -164,9 +183,11 @@ async function loadAudio(url) {
   const own = url.startsWith(`${BASE}/files/`) ? url.slice(BASE.length + 7).split("/")[0] : null;
   let data, type;
   if (own) {
-    const { rows } = await q("select data, content_type from files where id = $1", [own]);
-    if (!rows[0]) throw new Error(`no uploaded file with id ${own} on this server`);
-    ({ data, content_type: type } = rows[0]);
+    const meta = await fileMeta(own);
+    if (!meta) throw new Error(`no uploaded file with id ${own} on this server`);
+    if (meta.size > 25 * 1024 * 1024) throw new Error(`the file is larger than ${25 * 1024 * 1024} bytes`);
+    data = await readFile(own);
+    type = meta.content_type;
   } else {
     let res;
     try {
@@ -190,7 +211,7 @@ function guessType(name, isText) {
   const types = {
     mp3: "audio/mpeg", wav: "audio/wav", m4a: "audio/mp4", ogg: "audio/ogg", oga: "audio/ogg", webm: "audio/webm", flac: "audio/flac",
     mp4: "video/mp4", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
-    pdf: "application/pdf", json: "application/json", txt: "text/plain", md: "text/markdown", csv: "text/csv", html: "text/html",
+    pdf: "application/pdf", json: "application/json", txt: "text/plain", log: "text/plain; charset=utf-8", md: "text/markdown", csv: "text/csv", html: "text/html",
   };
   return types[ext] || (isText ? "text/plain; charset=utf-8" : "application/octet-stream");
 }
@@ -205,7 +226,7 @@ app.use((req, res, next) => {
   res.set({
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, Mcp-Protocol-Version, Mcp-Session-Id, Last-Event-ID, Mcp-Method, Mcp-Name",
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Expose-Headers": "WWW-Authenticate, Mcp-Session-Id, Mcp-Protocol-Version",
   });
   if (req.method === "OPTIONS") return res.status(204).end();
@@ -230,9 +251,20 @@ app.get(["/", "/plan"], (req, res) => {
 });
 app.get("/healthz", (req, res) => res.json({ ok: true }));
 
+// One-time upload link from the upload tool: the random token in the path is the credential.
+app.put("/uploads/:token", express.raw({ type: () => true, limit: MAX_PUT }), async (req, res) => {
+  const hash = crypto.createHash("sha256").update(req.params.token).digest("base64url");
+  const { rows } = await q("delete from upload_slots where token_hash = $1 returning file_id, name, content_type, expires_at", [hash]);
+  const slot = rows[0];
+  if (!slot || new Date(slot.expires_at) < new Date()) return res.status(404).json({ error: "this upload link is unknown, used or expired; call the upload tool again" });
+  const data = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  if (!data.length) return res.status(400).json({ error: "the request had no body; send the file bytes, e.g. curl -T file <upload_url>" });
+  await saveFile({ id: slot.file_id, name: slot.name, contentType: slot.content_type, data });
+  res.status(201).json({ url: fileUrl(slot.file_id, slot.name), id: slot.file_id, size: data.length, sha256: crypto.createHash("sha256").update(data).digest("hex") });
+});
+
 app.get("/files/:id{/:name}", async (req, res) => {
-  const { rows } = await q("select name, content_type, size, data from files where id = $1", [req.params.id]);
-  const f = rows[0];
+  const f = await fileMeta(req.params.id);
   if (!f) return res.status(404).type("text").send("not found");
   const inline = /^(audio|video|image\/(png|jpeg|gif|webp)|text\/plain|application\/pdf)/.test(f.content_type);
   res.set({
@@ -243,7 +275,11 @@ app.get("/files/:id{/:name}", async (req, res) => {
     "Content-Security-Policy": "default-src 'none'; sandbox",
     "Cache-Control": "public, max-age=3600",
   });
-  res.end(f.data);
+  if (req.method === "HEAD") return res.end();
+  for await (const part of fileChunks(f.id)) {
+    if (!res.write(part)) await new Promise((r) => res.once("drain", r));
+  }
+  res.end();
 });
 
 const mcp = createMcpHandler(buildServer, { maxRequestBodySize: MAX_BODY, onerror: (e) => console.error("mcp:", e.message) });

@@ -76,8 +76,14 @@ const segs = tr.structuredContent?.segments || [];
 ok(segs.length && typeof segs[0].start === "number", `transcribe -> ${segs.length} segments in ${((Date.now() - t0) / 1000).toFixed(1)}s; first: ${JSON.stringify(segs[0])}`);
 if (tr.isError) console.log(JSON.stringify(tr.content));
 
-const err = await client.callTool({ name: "upload", arguments: { filename: "x.txt" } });
-ok(err.isError, "upload without content -> isError");
+const err = await client.callTool({ name: "upload", arguments: { filename: "x.txt", text: "a", source_url: "https://example.com" } });
+ok(err.isError, "upload with two sources -> isError");
+const slot = await client.callTool({ name: "upload", arguments: { filename: "big.log" } });
+const big = Buffer.alloc(12 * 1024 * 1024, "x\n");
+const put = await fetch(slot.structuredContent.upload_url, { method: "PUT", body: big });
+const back = Buffer.from(await (await fetch(slot.structuredContent.url)).arrayBuffer());
+ok(put.status === 201 && back.equals(big), `upload_url PUT of ${big.length} bytes -> same bytes at url`);
+ok((await fetch(slot.structuredContent.upload_url, { method: "PUT", body: "again" })).status === 404, "upload_url works only once");
 const otherAud = await fetch(`${BASE}/mcp`, { method: "POST", headers: { Authorization: "Bearer not-a-token", "content-type": "application/json" }, body: "{}" });
 ok(otherAud.status === 401, "bad token refused");
 

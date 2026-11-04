@@ -3,7 +3,7 @@
 export function planPage({ base, resource, model, maxFileMb, as }) {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>memo-mcp plan</title><meta name="version" content="3">
+<title>memo-mcp plan</title><meta name="version" content="5">
 <style>
 :root{--bg:#fafaf8;--fg:#1d1d1b;--muted:#5f5f5a;--line:#deded8;--card:#fff;--accent:#1b5e20}
 @media (prefers-color-scheme:dark){:root{--bg:#141413;--fg:#ecece8;--muted:#a3a39c;--line:#2f2f2c;--card:#1d1d1b;--accent:#81c784}}
@@ -27,7 +27,7 @@ th{color:var(--muted);font-weight:600}td:first-child{white-space:nowrap}ol,ul{pa
 <tr><th>Tool</th><th>Input</th><th>Result</th><th>What it does</th></tr>
 <tr><td><code>memo_write</code></td><td><code>{ text }</code></td><td><code>{ id, created_at }</code></td><td>Saves a text note (up to 20,000 characters).</td></tr>
 <tr><td><code>memo_search</code></td><td><code>{ query, limit? }</code></td><td><code>{ notes: [{ id, text, created_at, truncated? }], more }</code></td><td>Finds notes that contain every word of the query, newest first. An empty query lists the newest notes. Results stay under 1 KB: the newest notes that fit, with <code>more</code> set when others were left out.</td></tr>
-<tr><td><code>upload</code></td><td><code>{ filename, content_base64 | text | source_url, content_type? }</code></td><td><code>{ url, id, filename, size, content_type }</code></td><td>Stores a file (up to ${maxFileMb} MB) and returns a link on this host that anyone can open.</td></tr>
+<tr><td><code>upload</code></td><td><code>{ filename, content_base64 | text | source_url, content_type? }</code></td><td><code>{ url, id, filename, size, content_type, upload_url?, expires_at? }</code></td><td>Stores a file (up to ${maxFileMb} MB inline) and returns a link on this host that anyone can open. With only a filename it returns a one-time <code>upload_url</code>: PUT the bytes there within 15 minutes (up to 50 MB), e.g. <code>curl -T big.log "<td><code>{ filename, content_base64 | text | source_url, content_type? }</code></td><td><code>{ url, id, filename, size, content_type }</code></td><td>Stores a file (up to ${maxFileMb} MB) and returns a link on this host that anyone can open.</td>lt;upload_url<td><code>{ filename, content_base64 | text | source_url, content_type? }</code></td><td><code>{ url, id, filename, size, content_type }</code></td><td>Stores a file (up to ${maxFileMb} MB) and returns a link on this host that anyone can open.</td>gt;"</code>.</td></tr>
 <tr><td><code>transcribe</code></td><td><code>{ url }</code></td><td><code>{ segments: [{ start, end, text }], duration, language }</code></td><td>Downloads audio from a URL and turns speech into text with timestamps in seconds. Runs Whisper (<code>${model}</code>) on this server; no outside speech service sees the audio.</td></tr>
 </table></div>
 <p>Every tool declares an output schema, and every result carries <code>structuredContent</code> that matches it, plus the same JSON as text.</p>
