@@ -4,15 +4,17 @@ A personal remote MCP server with four tools, behind OAuth:
 
 | Tool | Input | Result |
 |---|---|---|
-| `memo_write` | `{| `upload` | `{ filename, content_base64 | text | source_url, content_type? }`, or just `{ filename }` for a one-time PUT `upload_url` (big or local files) | `{ url, id, filename, size, content_type, upload_url?, expires_at? }` |}` | `{ id, created_at }` |
+| `memo_write` | `{ text }` | `{ id, created_at }` |
 | `memo_search` | `{ query, limit? }` | `{ notes: [{ id, text, created_at, truncated? }], more }` |
-| `upload` | `{ filename, content_base64 | text | source_url, content_type? }`, or just `{ filename }` for a one-time PUT `upload_url` (big or local files) | `{ url, id, filename, size, content_type, upload_url?, expires_at? }` |\| text \| source_url, content_type? }` | `{ url, id, filename, size, content_type }` |
-| `transcribe` | `{ url }` | `{ segments: [{ start, end,| `upload` | `{ filename, content_base64 | text | source_url, content_type? }`, or just `{ filename }` for a one-time PUT `upload_url` (big or local files) | `{ url, id, filename, size, content_type, upload_url?, expires_at? }` |}], duration, language }` |
+| `upload` | `{ filename, content_base64 \| text \| source_url, content_type? }`, or just `{ filename }` for a one-time PUT `upload_url` (big or local files) | `{ url, id, filename, size, content_type, upload_url?, expires_at? }` |
+| `transcribe` | `{ url }` | `{ segments: [{ start, end, text }], duration, language }` |
 
 - MCP revision 2026-07-28 over Streamable HTTP (older clients are served statelessly), via the MCP TypeScript SDK v2.
 - Its own OAuth 2.1 authorization server on the same host: Client ID Metadata Documents or Dynamic Client Registration, PKCE S256, RFC 8707 resource-bound tokens. The consent page asks for `OWNER_PASSWORD`, so only the owner can let a client in.
 - Speech-to-text runs locally with whisper.cpp (tiny model, greedy decoding) and ffmpeg.
-- Notes and files live in Postgres (`DATABASE_URL`).
+- Notes and files live in Postgres (`DATABASE_URL`), files in 1 MB chunks.
+- Every result stays under 1 KB; `memo_search` returns the newest notes that fit.
+- On Render's free plan the server requests its own health check every 10 minutes so it never sleeps.
 - The plan page at `/plan` describes the tools, the sign-in and the data kept.
 
 ## Deploy on Render
