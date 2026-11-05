@@ -297,3 +297,12 @@ app.use((err, req, res, next) => {
 
 await migrate();
 app.listen(PORT, () => console.log(`${NAME} on ${BASE} (port ${PORT}); MCP endpoint ${RESOURCE}`));
+
+// Render's free plan stops a service after 15 minutes without inbound traffic, and a cold start
+// is too slow for callers that come back later (they saw timeouts and 503s). A request to our own
+// public URL goes through Render's proxy, so it counts as traffic and keeps the service awake.
+if (BASE.startsWith("https://") && process.env.KEEP_AWAKE !== "0") {
+  setInterval(() => {
+    fetch(`${BASE}/healthz`, { signal: AbortSignal.timeout(30000) }).catch((e) => console.error("keep-awake:", e.message));
+  }, 10 * 60 * 1000);
+}

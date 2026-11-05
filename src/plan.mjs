@@ -3,7 +3,7 @@
 export function planPage({ base, resource, model, maxFileMb, as }) {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>memo-mcp plan</title><meta name="version" content="5">
+<title>memo-mcp plan</title><meta name="version" content="6">
 <style>
 :root{--bg:#fafaf8;--fg:#1d1d1b;--muted:#5f5f5a;--line:#deded8;--card:#fff;--accent:#1b5e20}
 @media (prefers-color-scheme:dark){:root{--bg:#141413;--fg:#ecece8;--muted:#a3a39c;--line:#2f2f2c;--card:#1d1d1b;--accent:#81c784}}
@@ -55,7 +55,7 @@ th{color:var(--muted);font-weight:600}td:first-child{white-space:nowrap}ol,ul{pa
 <ul>
 <li>Files up to ${maxFileMb} MB; audio for transcribe up to 25 MB. One transcription runs at a time.</li>
 <li>Outbound fetches (<code>source_url</code>, <code>transcribe</code>) only reach public http(s) addresses.</li>
-<li>The free host sleeps when idle, so the first call after a quiet spell can take up to a minute.</li>
+<li>The server requests its own health check every 10 minutes so the free host never goes idle and sleeps.</li>
 </ul>
 </main></body></html>`;
 }
