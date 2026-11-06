@@ -18,7 +18,17 @@ export async function migrateAway() {
     create table if not exists away_messages (
       id text primary key, received_at timestamptz not null default now(), sender text, subject text, text text,
       reply_url text, act text, label text, status text not null, code text, reply text, done_at timestamptz);
+    alter table away_messages add column if not exists round integer;
+    create table if not exists away_events (
+      seq bigserial primary key, at timestamptz not null default clock_timestamp(), message_id text, round integer,
+      event text not null, detail text);
   `);
+}
+
+// The status log: one row per event, written at the moment it happens (never rebuilt later).
+async function logEvent(messageId, event, detail = null) {
+  await q("insert into away_events (message_id, round, event, detail) select $1, round, $2, $3 from away_messages where id = $1", [messageId, event, detail])
+    .catch((e) => log("event log failed", event, e.message));
 }
 
 async function config(key) {
@@ -67,9 +77,10 @@ async function emailPing(subject, text) {
 
 // Pings the owner's phone; returns what ntfy answered and keeps it as last_ping, so a failed
 // ping is visible in away_configure instead of only in the host's log.
-async function ping(title, message, clickUrl) {
+async function ping(title, message, clickUrl, messageId) {
   // Email too: ntfy.sh's free quota is per IP, and Render's shared IP can use it up.
   const mail = await emailPing(title, `${message}\n\nApproval page: ${clickUrl}`);
+  if (messageId && mail === "HTTP 200") await logEvent(messageId, "notified", "email");
   const topic = await config("ntfy_topic");
   if (!topic) return `no ntfy topic set; email ${mail}`;
   let outcome = "";
@@ -83,7 +94,7 @@ async function ping(title, message, clickUrl) {
         signal: AbortSignal.timeout(15000),
       });
       outcome = `HTTP ${res.status}${res.ok ? "" : ` ${(await res.text()).slice(0, 120)}`}`;
-      if (res.ok) break;
+      if (res.ok) { if (messageId) await logEvent(messageId, "notified", "ntfy"); break; }
     } catch (e) {
       outcome = `failed: ${e.message}`;
     }
@@ -105,6 +116,7 @@ async function handle(msg, base) {
     const reply = "Received. This message names no act, so nothing was done.";
     await q("update away_messages set label='none', status='done', reply=$2, done_at=now() where id=$1", [id, reply]);
     await sendReply(msg.reply_url, reply);
+    await logEvent(id, "replied", reply);
     log("no act", id);
     return;
   }
@@ -118,8 +130,9 @@ async function handle(msg, base) {
   await q("update away_messages set act=$2, label=$3, status=$4, reply=$5, done_at=case when $4='done' then now() end where id=$1",
     [id, held.join(",") || acts.join(","), held.length ? "gated" : "free", held.length ? "held" : "done", reply]);
   await sendReply(msg.reply_url, reply);
+  await logEvent(id, "replied", reply);
   if (held.length) {
-    await ping(`Approval needed: ${held.join(", ")}`, `From ${msg.sender}: ${String(msg.text).slice(0, 300)}\n\nOpen the approval page and enter your code.`, `${base}/away/approve/${id}`);
+    await ping(`Approval needed: ${held.join(", ")}`, `From ${msg.sender}: ${String(msg.text).slice(0, 300)}\n\nOpen the approval page and enter your code.`, `${base}/away/approve/${id}`, id);
   }
   log("handled", id, reply.replace(/\n/g, " | "));
 }
@@ -152,8 +165,12 @@ export function awayRouter({ base, ownerPassword }) {
     try { body = JSON.parse(raw); } catch { return res.status(400).json({ error: "body is not JSON" }); }
     const post = body.post && typeof body.post === "object" ? body.post : body;
     const id = `m_${crypto.randomBytes(8).toString("base64url")}`;
-    await q("insert into away_messages (id, sender, subject, text, reply_url, status) values ($1,$2,$3,$4,$5,'received')",
-      [id, String(post.from || ""), String(post.subject || ""), String(post.text || ""), String(post.replyUrl || "")]);
+    // Round 1 is the message before the owner's window, round 2 the asks inside it.
+    const from = Date.parse((await config("window_from")) || "");
+    const round = Number.isFinite(from) && Date.now() >= from ? 2 : 1;
+    await q("insert into away_messages (id, sender, subject, text, reply_url, status, round) values ($1,$2,$3,$4,$5,'received',$6)",
+      [id, String(post.from || ""), String(post.subject || ""), String(post.text || ""), String(post.replyUrl || ""), round]);
+    await logEvent(id, "received", String(post.subject || ""));
     res.status(202).json({ received: id });
     handle({ id, sender: post.from, text: post.text, reply_url: post.replyUrl }, base)
       .catch(async (e) => { log("handle failed", id, e.message); await q("update away_messages set status='error', reply=$2 where id=$1", [id, e.message]); });
@@ -170,7 +187,9 @@ button{font:inherit;padding:.6rem 1.2rem;border-radius:8px;border:1px solid #999
     const m = rows[0];
     if (!m) return page("Not found", "<h1>No such message</h1>");
     if (m.status !== "held") return page("Done", `<h1>Already ${esc(m.status)}</h1><p>Reply sent: ${esc(m.reply)}</p>`);
-    const options = Object.keys(ACTS).map((a) => `<option value="${a}"${a === m.act ? " selected" : ""}>${a} — ${esc(ACTS[a])}</option>`).join("");
+    // Only the held acts are offered, so a tap can never approve an act the message did not hold.
+    const heldActs = String(m.act || "").split(",").filter((a) => a in ACTS);
+    const options = (heldActs.length ? heldActs : Object.keys(ACTS)).map((a, i) => `<option value="${a}"${heldActs.length && i === 0 ? " selected" : ""}>${a} — ${esc(ACTS[a])}</option>`).join("");
     return page("Approve held act", `<h1>Approve this act?</h1>
 <p class="muted">From <strong>${esc(m.sender)}</strong> · ${esc(m.subject)} · ${esc(new Date(m.received_at).toISOString())}</p>
 <blockquote>${esc(m.text)}</blockquote>
@@ -199,6 +218,7 @@ ${error ? `<p class="err">${esc(error)}</p>` : ""}
     const { rows } = await q("select * from away_messages where id = $1 and status = 'held'", [req.params.id]);
     const m = rows[0];
     if (!m) return res.status(404).send(await approvalPage(req.params.id));
+    await logEvent(m.id, "owner_answered", req.body.decision === "decline" ? "decline" : "approve");
     let reply;
     if (req.body.decision === "decline") {
       reply = String(m.act || "request").split(",").map((a) => `DECLINED: ${a}`).join("\n");
@@ -213,6 +233,7 @@ ${error ? `<p class="err">${esc(error)}</p>` : ""}
     }
     try {
       await sendReply(m.reply_url, reply);
+      await logEvent(m.id, "replied", reply);
     } catch (e) {
       return res.status(502).send(page("Reply failed", `<h1>Done here, but the reply failed</h1><p class="err">${esc(e.message)}</p>`));
     }
@@ -228,10 +249,13 @@ export function registerAwayTools(server) {
     title: "Configure the away agent",
     description: "Stores the course's signing key for this try and the ntfy topic the agent pings. Values are never returned.",
     inputSchema: z.object({ signing_key: z.string().min(8).max(500).optional(), ntfy_topic: z.string().regex(/^[\w-]{6,64}$/).optional(), test_ping: z.boolean().optional().describe("Send a test ping now and report what ntfy and email answered"),
-      agentmail_key: z.string().min(8).max(300).optional(), agentmail_inbox: z.string().email().optional(), ping_email: z.string().email().optional() }),
+      agentmail_key: z.string().min(8).max(300).optional(), agentmail_inbox: z.string().email().optional(), ping_email: z.string().email().optional(),
+      window_from: z.string().optional().describe("Start of the owner's window (ISO); messages before it are round 1") }),
     outputSchema: z.object({ signing_key_set: z.boolean(), ntfy_topic_set: z.boolean(), policy: z.record(z.string(), z.string()), last_ping: z.string().nullable() }),
-  }, async ({ signing_key, ntfy_topic, test_ping, agentmail_key, agentmail_inbox, ping_email }) => {
-    for (const [k, v] of [["signing_key", signing_key], ["ntfy_topic", ntfy_topic], ["agentmail_key", agentmail_key], ["agentmail_inbox", agentmail_inbox], ["ping_email", ping_email]]) {
+  }, async ({ signing_key, ntfy_topic, test_ping, agentmail_key, agentmail_inbox, ping_email, window_from }) => {
+    // A new signing key starts a new try: the status log counts from here.
+    const tryStarted = signing_key ? new Date().toISOString() : undefined;
+    for (const [k, v] of [["signing_key", signing_key], ["ntfy_topic", ntfy_topic], ["agentmail_key", agentmail_key], ["agentmail_inbox", agentmail_inbox], ["ping_email", ping_email], ["window_from", window_from], ["try_started", tryStarted]]) {
       if (v) await q("insert into away_config (key, value) values ($1,$2) on conflict (key) do update set value = excluded.value", [k, v]);
     }
     if (test_ping) await ping("memo-mcp away agent: test ping", "Sent from the server. If you see this, approval pings work.", `${process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || ""}/plan`);
@@ -252,6 +276,20 @@ export function registerAwayTools(server) {
     await handle({ id: m.id, sender: m.sender, text: m.text, reply_url: m.reply_url }, process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || "");
     const { rows: [after] } = await q("select status, reply from away_messages where id = $1", [id]);
     const out = { id, status: after.status, reply: after.reply };
+    return { content: [{ type: "text", text: JSON.stringify(out) }], structuredContent: out };
+  });
+
+  server.registerTool("away_log", {
+    title: "Away agent status log",
+    description: "The agent's status log for the current try, as JSON lines: one line per event (received, notified, owner_answered, replied), each written when it happened.",
+    inputSchema: z.object({}),
+    outputSchema: z.object({ log: z.string(), events: z.number() }),
+    annotations: { readOnlyHint: true },
+  }, async () => {
+    const since = (await config("try_started")) || "1970-01-01T00:00:00Z";
+    const { rows } = await q("select at, round, event from away_events where at >= $1 and round is not null order by seq", [since]);
+    const log = rows.map((r) => JSON.stringify({ at: r.at.toISOString().replace("Z", "+00:00"), round: String(r.round), event: r.event })).join("\n");
+    const out = { log, events: rows.length };
     return { content: [{ type: "text", text: JSON.stringify(out) }], structuredContent: out };
   });
 

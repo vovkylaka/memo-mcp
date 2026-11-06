@@ -37,9 +37,9 @@ const r4 = await send({ from: "rook", subject: "x", text: "`purge_cache`", reply
 ok(r4.status === 401, `stale timestamp refused (${r4.status})`);
 const r5 = await send({ from: "rook", subject: "x", text: "please clear things up", replyUrl: reply(5) });
 await wait(1500);
-ok(replies.find((r) => r.path === "/reply/1")?.text?.startsWith("DONE post_status"), `free -> ${replies.find((r) => r.path === "/reply/1")?.text}`);
-ok(replies.find((r) => r.path === "/reply/2")?.text?.startsWith("HELD release_hold"), `gated -> ${replies.find((r) => r.path === "/reply/2")?.text}`);
-ok(replies.find((r) => r.path === "/reply/5")?.text?.startsWith("HELD request"), `unclear -> held`);
+ok(replies.find((r) => r.path === "/reply/1")?.text?.startsWith("DONE: post_status"), `free -> ${replies.find((r) => r.path === "/reply/1")?.text}`);
+ok(replies.find((r) => r.path === "/reply/2")?.text?.startsWith("HOLD: release_hold"), `gated -> ${replies.find((r) => r.path === "/reply/2")?.text}`);
+ok(replies.find((r) => r.path === "/reply/5")?.text?.startsWith("Received."), `unclear -> receipt, nothing done`);
 ok(!replies.find((r) => r.path === "/reply/3" || r.path === "/reply/4"), "no reply to refused messages");
 
 const st = await client.callTool({ name: "away_status", arguments: { limit: 3 } });
@@ -51,6 +51,12 @@ const bad = await fetch(`${BASE}/away/approve/${held.id}`, { method: "POST", bod
 ok(bad.status === 401, "approval with wrong password refused");
 const good = await fetch(`${BASE}/away/approve/${held.id}`, { method: "POST", body: new URLSearchParams({ act: "release_hold", code: "ABC123", password: process.env.OWNER_PASSWORD, decision: "approve" }) });
 await wait(500);
-ok(good.status === 200 && replies.filter((r) => r.path === "/reply/2").at(-1)?.text?.includes("code ABC123"), `approved -> ${replies.filter((r) => r.path === "/reply/2").at(-1)?.text}`);
+ok(good.status === 200 && replies.filter((r) => r.path === "/reply/2").at(-1)?.text?.includes("DONE: release_hold CODE: ABC123"), `approved -> ${replies.filter((r) => r.path === "/reply/2").at(-1)?.text}`);
 await client.close();
 course.close();
+const lg = await new Client({ name: "log", version: "1" });
+await lg.connect(new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${process.env.TOKEN}` } } }));
+const evlog = (await lg.callTool({ name: "away_log", arguments: {} })).structuredContent;
+console.log(evlog.log);
+ok(/"event":"received"/.test(evlog.log) && /"event":"owner_answered"/.test(evlog.log) && /"event":"replied"/.test(evlog.log), `away_log has ${evlog.events} events written as they happened`);
+await lg.close();
