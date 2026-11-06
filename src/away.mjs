@@ -159,6 +159,8 @@ export function awayRouter({ base, ownerPassword }) {
     const fresh = Number.isFinite(tsMs) ? Math.abs(Date.now() - tsMs) < 10 * 60 * 1000 : false;
     if (!sig || sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected)) || !fresh) {
       log("bad signature; dropped");
+      const why = !sig ? "no signature" : !fresh ? `stale or unreadable timestamp ${ts.slice(0, 40)}` : "signature mismatch";
+      await q("insert into away_events (event, detail) values ('rejected', $1)", [why]).catch(() => {});
       return res.status(401).json({ error: "bad signature" });
     }
     let body;
