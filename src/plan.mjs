@@ -3,7 +3,7 @@
 export function planPage({ base, resource, model, maxFileMb, as }) {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>memo-mcp plan</title><meta name="version" content="13">
+<title>memo-mcp plan</title><meta name="version" content="14">
 <style>
 :root{--bg:#fafaf8;--fg:#1d1d1b;--muted:#5f5f5a;--line:#deded8;--card:#fff;--accent:#1b5e20}
 @media (prefers-color-scheme:dark){:root{--bg:#141413;--fg:#ecece8;--muted:#a3a39c;--line:#2f2f2c;--card:#1d1d1b;--accent:#81c784}}

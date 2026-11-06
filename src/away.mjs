@@ -259,11 +259,11 @@ export function registerAwayTools(server) {
     title: "Away agent messages",
     description: "Lists the newest course messages the away agent received: act, label, status and the reply it sent.",
     inputSchema: z.object({ limit: z.number().int().min(1).max(10).optional() }),
-    outputSchema: z.object({ messages: z.array(z.object({ id: z.string(), at: z.string(), from: z.string(), act: z.string().nullable(), label: z.string().nullable(), status: z.string(), reply: z.string().nullable() })) }),
+    outputSchema: z.object({ messages: z.array(z.object({ id: z.string(), at: z.string(), from: z.string(), act: z.string().nullable(), label: z.string().nullable(), status: z.string(), done_at: z.string().nullable(), reply: z.string().nullable() })) }),
     annotations: { readOnlyHint: true },
   }, async ({ limit }) => {
-    const { rows } = await q("select id, received_at, sender, act, label, status, reply from away_messages order by received_at desc limit $1", [limit ?? 3]);
-    const out = { messages: rows.map((r) => ({ id: r.id, at: r.received_at.toISOString(), from: r.sender || "", act: r.act, label: r.label, status: r.status, reply: r.reply ? r.reply.slice(0, 70) : null })) };
+    const { rows } = await q("select id, received_at, sender, act, label, status, done_at, reply from away_messages order by received_at desc limit $1", [limit ?? 3]);
+    const out = { messages: rows.map((r) => ({ id: r.id, at: r.received_at.toISOString(), from: r.sender || "", act: r.act, label: r.label, status: r.status, done_at: r.done_at ? r.done_at.toISOString() : null, reply: r.reply ? r.reply.slice(0, 60) : null })) };
     return { content: [{ type: "text", text: JSON.stringify(out) }], structuredContent: out };
   });
 }
