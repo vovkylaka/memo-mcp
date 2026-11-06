@@ -149,6 +149,8 @@ export function awayRouter({ base, ownerPassword }) {
   r.post("/away/inbox", express.raw({ type: () => true, limit: "64kb" }), async (req, res) => {
     const raw = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
     const ts = req.get("x-course-timestamp") || "";
+    // Every delivery, before any check: when it arrived and the course's own timestamp.
+    await q("insert into away_events (event, detail) values ('arrival', $1)", [`ts=${ts.slice(0, 40)} bytes=${raw.length} subject=${(raw.match(/"subject"\s*:\s*"([^"]{0,60})/) || [])[1] || ""}`]).catch(() => {});
     const sig = (req.get("x-course-signature") || "").replace(/^sha256=/, "");
     const key = await config("signing_key");
     if (!key) { log("no signing key yet; dropped"); return res.status(503).json({ error: "agent not configured" }); }
@@ -291,7 +293,7 @@ export function registerAwayTools(server) {
     const since = (await config("try_started")) || "1970-01-01T00:00:00Z";
     const { rows } = await q("select at, round, event from away_events where at >= $1 and round is not null order by seq", [since]);
     const log = rows.map((r) => JSON.stringify({ at: r.at.toISOString().replace("Z", "+00:00"), round: String(r.round), event: r.event })).join("\n");
-    const { rows: rej } = await q("select at, detail from away_events where event = 'rejected' and at >= now() - interval '6 hours' order by seq desc limit 5");
+    const { rows: rej } = await q("select at, detail from away_events where event in ('rejected', 'arrival') and at >= now() - interval '6 hours' order by seq desc limit 6");
     const out = { log, events: rows.length, rejected: rej.map((r) => `${r.at.toISOString()} ${r.detail}`) };
     return { content: [{ type: "text", text: JSON.stringify(out) }], structuredContent: out };
   });
