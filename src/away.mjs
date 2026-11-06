@@ -48,20 +48,32 @@ async function sendReply(url, text) {
   if (!res.ok) throw new Error(`reply answered HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
 }
 
+// Pings the owner's phone; returns what ntfy answered and keeps it as last_ping, so a failed
+// ping is visible in away_configure instead of only in the host's log.
 async function ping(title, message, clickUrl) {
   const topic = await config("ntfy_topic");
-  if (!topic) return log("no ntfy topic set; no phone ping");
-  try {
-    const res = await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
-      method: "POST",
-      headers: { Title: title, Priority: "high", Tags: "warning", Click: clickUrl, Actions: `view, Open approval page, ${clickUrl}` },
-      body: message,
-      signal: AbortSignal.timeout(15000),
-    });
-    log("ntfy ping", res.status);
-  } catch (e) {
-    log("ntfy ping failed", e.message);
+  if (!topic) return "no ntfy topic set";
+  let outcome = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      // JSON publishing keeps the title and text out of HTTP headers (no header-encoding limits).
+      const res = await fetch("https://ntfy.sh/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ topic, title, message, priority: 4, tags: ["warning"], click: clickUrl, actions: [{ action: "view", label: "Open approval page", url: clickUrl }] }),
+        signal: AbortSignal.timeout(15000),
+      });
+      outcome = `HTTP ${res.status}${res.ok ? "" : ` ${(await res.text()).slice(0, 120)}`}`;
+      if (res.ok) break;
+    } catch (e) {
+      outcome = `failed: ${e.message}`;
+    }
+    await new Promise((r) => setTimeout(r, 2000 * attempt));
   }
+  outcome = `${new Date().toISOString()} ${outcome}`;
+  log("ntfy ping", outcome);
+  await q("insert into away_config (key, value) values ('last_ping', $1) on conflict (key) do update set value = excluded.value", [outcome]).catch(() => {});
+  return outcome;
 }
 
 async function handle(msg, base) {
@@ -180,13 +192,14 @@ export function registerAwayTools(server) {
   server.registerTool("away_configure", {
     title: "Configure the away agent",
     description: "Stores the course's signing key for this try and the ntfy topic the agent pings. Values are never returned.",
-    inputSchema: z.object({ signing_key: z.string().min(8).max(500).optional(), ntfy_topic: z.string().regex(/^[\w-]{6,64}$/).optional() }),
-    outputSchema: z.object({ signing_key_set: z.boolean(), ntfy_topic_set: z.boolean(), policy: z.record(z.string(), z.string()) }),
-  }, async ({ signing_key, ntfy_topic }) => {
+    inputSchema: z.object({ signing_key: z.string().min(8).max(500).optional(), ntfy_topic: z.string().regex(/^[\w-]{6,64}$/).optional(), test_ping: z.boolean().optional().describe("Send a test ping now and report what ntfy answered") }),
+    outputSchema: z.object({ signing_key_set: z.boolean(), ntfy_topic_set: z.boolean(), policy: z.record(z.string(), z.string()), last_ping: z.string().nullable() }),
+  }, async ({ signing_key, ntfy_topic, test_ping }) => {
     for (const [k, v] of [["signing_key", signing_key], ["ntfy_topic", ntfy_topic]]) {
       if (v) await q("insert into away_config (key, value) values ($1,$2) on conflict (key) do update set value = excluded.value", [k, v]);
     }
-    const out = { signing_key_set: !!(await config("signing_key")), ntfy_topic_set: !!(await config("ntfy_topic")), policy };
+    if (test_ping) await ping("memo-mcp away agent: test ping", "Sent from the server. If you see this, approval pings work.", `${process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || ""}/plan`);
+    const out = { signing_key_set: !!(await config("signing_key")), ntfy_topic_set: !!(await config("ntfy_topic")), policy, last_ping: await config("last_ping") };
     return { content: [{ type: "text", text: JSON.stringify(out) }], structuredContent: out };
   });
 
