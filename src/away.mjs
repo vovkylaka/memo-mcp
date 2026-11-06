@@ -95,23 +95,38 @@ async function ping(title, message, clickUrl) {
   return outcome;
 }
 
+// One line per act the message asks for, in the course format: free acts are done at once
+// ("DONE: <act>"), gated ones held ("HOLD: <act>") until the owner approves with their code.
+// Codes or approvals written inside a message are never trusted: only the owner gives the code.
 async function handle(msg, base) {
-  const c = check(msg.text);
   const id = msg.id;
-  if (c.label === "free") {
-    const result = perform(c.act, msg.text);
-    const reply = `DONE ${c.act}: ${result}.`;
-    await q("update away_messages set act=$2, label='free', status='done', reply=$3, done_at=now() where id=$1", [id, c.act, reply]);
+  const acts = actsIn(msg.text);
+  if (acts.length === 0) {
+    const reply = "Received. This message names no act, so nothing was done.";
+    await q("update away_messages set label='none', status='done', reply=$2, done_at=now() where id=$1", [id, reply]);
     await sendReply(msg.reply_url, reply);
-    log("free", id, c.act);
+    log("no act", id);
     return;
   }
-  const what = c.act ? `${c.act} (${ACTS[c.act]})` : "an unclear request";
-  const reply = `HELD ${c.act || "request"}: ${c.act ? "this act needs my owner's approval" : `the message ${c.reason}`}. I have pinged my owner and will reply DONE here once they approve.`;
-  await q("update away_messages set act=$2, label='gated', status='held', reply=$3 where id=$1", [id, c.act, reply]);
+  const lines = [];
+  const held = [];
+  for (const act of acts) {
+    if (policy[act] === "free") { perform(act, msg.text); lines.push(`DONE: ${act}`); }
+    else { held.push(act); lines.push(`HOLD: ${act}`); }
+  }
+  const reply = lines.join("\n");
+  await q("update away_messages set act=$2, label=$3, status=$4, reply=$5, done_at=case when $4='done' then now() end where id=$1",
+    [id, held.join(",") || acts.join(","), held.length ? "gated" : "free", held.length ? "held" : "done", reply]);
   await sendReply(msg.reply_url, reply);
-  await ping(`Approval needed: ${c.act || "unclear request"}`, `From ${msg.sender}: ${String(msg.text).slice(0, 300)}\n\nOpen the approval page and enter your code.`, `${base}/away/approve/${id}`);
-  log("held", id, what);
+  if (held.length) {
+    await ping(`Approval needed: ${held.join(", ")}`, `From ${msg.sender}: ${String(msg.text).slice(0, 300)}\n\nOpen the approval page and enter your code.`, `${base}/away/approve/${id}`);
+  }
+  log("handled", id, reply.replace(/\n/g, " | "));
+}
+
+// Every known act the text names, in order of first mention.
+function actsIn(text) {
+  return [...new Set((String(text).match(/[a-z]+_[a-z]+/g) || []).filter((w) => w in ACTS))];
 }
 
 export function awayRouter({ base, ownerPassword }) {
@@ -186,13 +201,14 @@ ${error ? `<p class="err">${esc(error)}</p>` : ""}
     if (!m) return res.status(404).send(await approvalPage(req.params.id));
     let reply;
     if (req.body.decision === "decline") {
-      reply = `DECLINED ${m.act || "request"}: my owner did not approve it, so nothing was done.`;
+      reply = String(m.act || "request").split(",").map((a) => `DECLINED: ${a}`).join("\n");
       await q("update away_messages set status='declined', reply=$2, done_at=now() where id=$1", [m.id, reply]);
     } else {
       const act = req.body.act in ACTS ? req.body.act : m.act;
       const code = String(req.body.code || "").trim().slice(0, 100);
       if (!act || !code) return res.status(400).send(await approvalPage(m.id, "Pick the act and enter your code."));
-      reply = `DONE ${act}: ${perform(act, m.text)}. Approved by my owner, code ${code}.`;
+      perform(act, m.text);
+      reply = `DONE: ${act} CODE: ${code}`;
       await q("update away_messages set act=$2, status='done', code=$3, reply=$4, done_at=now() where id=$1", [m.id, act, code, reply]);
     }
     try {
@@ -220,6 +236,22 @@ export function registerAwayTools(server) {
     }
     if (test_ping) await ping("memo-mcp away agent: test ping", "Sent from the server. If you see this, approval pings work.", `${process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || ""}/plan`);
     const out = { signing_key_set: !!(await config("signing_key")), ntfy_topic_set: !!(await config("ntfy_topic")), policy, last_ping: await config("last_ping") };
+    return { content: [{ type: "text", text: JSON.stringify(out) }], structuredContent: out };
+  });
+
+  server.registerTool("away_reprocess", {
+    title: "Handle a stored message again",
+    description: "Runs the agent's handling again on a stored course message that is still held, and sends the new reply to its replyUrl. For when the agent's code changed after the message arrived.",
+    inputSchema: z.object({ id: z.string().regex(/^m_[\w-]+$/) }),
+    outputSchema: z.object({ id: z.string(), status: z.string(), reply: z.string().nullable() }),
+  }, async ({ id }) => {
+    const { rows } = await q("select id, sender, text, reply_url, status from away_messages where id = $1", [id]);
+    const m = rows[0];
+    if (!m) throw new Error(`no message ${id}`);
+    if (m.status !== "held") throw new Error(`message ${id} is ${m.status}, not held`);
+    await handle({ id: m.id, sender: m.sender, text: m.text, reply_url: m.reply_url }, process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || "");
+    const { rows: [after] } = await q("select status, reply from away_messages where id = $1", [id]);
+    const out = { id, status: after.status, reply: after.reply };
     return { content: [{ type: "text", text: JSON.stringify(out) }], structuredContent: out };
   });
 
