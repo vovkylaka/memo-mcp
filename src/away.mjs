@@ -48,11 +48,30 @@ async function sendReply(url, text) {
   if (!res.ok) throw new Error(`reply answered HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
 }
 
+// Emails the owner through AgentMail when a key, inbox and address are configured.
+async function emailPing(subject, text) {
+  const [key, inbox, to] = await Promise.all([config("agentmail_key"), config("agentmail_inbox"), config("ping_email")]);
+  if (!key || !inbox || !to) return "not configured";
+  try {
+    const res = await fetch(`https://api.agentmail.to/v0/inboxes/${encodeURIComponent(inbox)}/messages/send`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ to: [to], subject, text }),
+      signal: AbortSignal.timeout(15000),
+    });
+    return `HTTP ${res.status}`;
+  } catch (e) {
+    return `failed: ${e.message}`;
+  }
+}
+
 // Pings the owner's phone; returns what ntfy answered and keeps it as last_ping, so a failed
 // ping is visible in away_configure instead of only in the host's log.
 async function ping(title, message, clickUrl) {
+  // Email too: ntfy.sh's free quota is per IP, and Render's shared IP can use it up.
+  const mail = await emailPing(title, `${message}\n\nApproval page: ${clickUrl}`);
   const topic = await config("ntfy_topic");
-  if (!topic) return "no ntfy topic set";
+  if (!topic) return `no ntfy topic set; email ${mail}`;
   let outcome = "";
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
@@ -70,7 +89,7 @@ async function ping(title, message, clickUrl) {
     }
     await new Promise((r) => setTimeout(r, 2000 * attempt));
   }
-  outcome = `${new Date().toISOString()} ${outcome}`;
+  outcome = `${new Date().toISOString()} ntfy ${outcome}; email ${mail}`;
   log("ntfy ping", outcome);
   await q("insert into away_config (key, value) values ('last_ping', $1) on conflict (key) do update set value = excluded.value", [outcome]).catch(() => {});
   return outcome;
@@ -192,10 +211,11 @@ export function registerAwayTools(server) {
   server.registerTool("away_configure", {
     title: "Configure the away agent",
     description: "Stores the course's signing key for this try and the ntfy topic the agent pings. Values are never returned.",
-    inputSchema: z.object({ signing_key: z.string().min(8).max(500).optional(), ntfy_topic: z.string().regex(/^[\w-]{6,64}$/).optional(), test_ping: z.boolean().optional().describe("Send a test ping now and report what ntfy answered") }),
+    inputSchema: z.object({ signing_key: z.string().min(8).max(500).optional(), ntfy_topic: z.string().regex(/^[\w-]{6,64}$/).optional(), test_ping: z.boolean().optional().describe("Send a test ping now and report what ntfy and email answered"),
+      agentmail_key: z.string().min(8).max(300).optional(), agentmail_inbox: z.string().email().optional(), ping_email: z.string().email().optional() }),
     outputSchema: z.object({ signing_key_set: z.boolean(), ntfy_topic_set: z.boolean(), policy: z.record(z.string(), z.string()), last_ping: z.string().nullable() }),
-  }, async ({ signing_key, ntfy_topic, test_ping }) => {
-    for (const [k, v] of [["signing_key", signing_key], ["ntfy_topic", ntfy_topic]]) {
+  }, async ({ signing_key, ntfy_topic, test_ping, agentmail_key, agentmail_inbox, ping_email }) => {
+    for (const [k, v] of [["signing_key", signing_key], ["ntfy_topic", ntfy_topic], ["agentmail_key", agentmail_key], ["agentmail_inbox", agentmail_inbox], ["ping_email", ping_email]]) {
       if (v) await q("insert into away_config (key, value) values ($1,$2) on conflict (key) do update set value = excluded.value", [k, v]);
     }
     if (test_ping) await ping("memo-mcp away agent: test ping", "Sent from the server. If you see this, approval pings work.", `${process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || ""}/plan`);
