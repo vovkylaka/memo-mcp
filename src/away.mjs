@@ -285,13 +285,14 @@ export function registerAwayTools(server) {
     title: "Away agent status log",
     description: "The agent's status log for the current try, as JSON lines: one line per event (received, notified, owner_answered, replied), each written when it happened.",
     inputSchema: z.object({}),
-    outputSchema: z.object({ log: z.string(), events: z.number() }),
+    outputSchema: z.object({ log: z.string(), events: z.number(), rejected: z.array(z.string()) }),
     annotations: { readOnlyHint: true },
   }, async () => {
     const since = (await config("try_started")) || "1970-01-01T00:00:00Z";
     const { rows } = await q("select at, round, event from away_events where at >= $1 and round is not null order by seq", [since]);
     const log = rows.map((r) => JSON.stringify({ at: r.at.toISOString().replace("Z", "+00:00"), round: String(r.round), event: r.event })).join("\n");
-    const out = { log, events: rows.length };
+    const { rows: rej } = await q("select at, detail from away_events where event = 'rejected' and at >= now() - interval '6 hours' order by seq desc limit 5");
+    const out = { log, events: rows.length, rejected: rej.map((r) => `${r.at.toISOString()} ${r.detail}`) };
     return { content: [{ type: "text", text: JSON.stringify(out) }], structuredContent: out };
   });
 
