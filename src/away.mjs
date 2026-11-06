@@ -126,7 +126,7 @@ async function handle(msg, base) {
 
 // Every known act the text names, in order of first mention.
 function actsIn(text) {
-  return [...new Set((String(text).match(/[a-z]+_[a-z]+/g) || []).filter((w) => w in ACTS))];
+  return [...new Set((String(text).match(/\b[a-z]+_[a-z]+\b/g) || []).filter((w) => w in ACTS))];
 }
 
 export function awayRouter({ base, ownerPassword }) {
