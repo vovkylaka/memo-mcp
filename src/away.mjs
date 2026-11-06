@@ -130,7 +130,7 @@ async function handle(msg, base) {
   await q("update away_messages set act=$2, label=$3, status=$4, reply=$5, done_at=case when $4='done' then now() end where id=$1",
     [id, held.join(",") || acts.join(","), held.length ? "gated" : "free", held.length ? "held" : "done", reply]);
   await sendReply(msg.reply_url, reply);
-  await logEvent(id, "replied", reply);
+  for (const line of lines) await logEvent(id, "replied", line); // one per ask answered
   if (held.length) {
     await ping(`Approval needed: ${held.join(", ")}`, `From ${msg.sender}: ${String(msg.text).slice(0, 300)}\n\nOpen the approval page and enter your code.`, `${base}/away/approve/${id}`, id);
   }
@@ -174,7 +174,9 @@ export function awayRouter({ base, ownerPassword }) {
     const round = Number.isFinite(from) && Date.now() >= from ? 2 : 1;
     await q("insert into away_messages (id, sender, subject, text, reply_url, status, round) values ($1,$2,$3,$4,$5,'received',$6)",
       [id, String(post.from || ""), String(post.subject || ""), String(post.text || ""), String(post.replyUrl || ""), round]);
-    await logEvent(id, "received", String(post.subject || ""));
+    // One row per ask: a message with two acts is two asks received.
+    const asks = actsIn(post.text);
+    for (const act of asks.length ? asks : [null]) await logEvent(id, "received", act || String(post.subject || ""));
     res.status(202).json({ received: id });
     handle({ id, sender: post.from, text: post.text, reply_url: post.replyUrl }, base)
       .catch(async (e) => { log("handle failed", id, e.message); await q("update away_messages set status='error', reply=$2 where id=$1", [id, e.message]); });
@@ -292,7 +294,7 @@ export function registerAwayTools(server) {
   }, async () => {
     const since = (await config("try_started")) || "1970-01-01T00:00:00Z";
     const { rows } = await q("select at, round, event from away_events where at >= $1 and round is not null order by seq", [since]);
-    const log = rows.map((r) => JSON.stringify({ at: r.at.toISOString().replace("Z", "+00:00"), round: String(r.round), event: r.event })).join("\n");
+    const log = rows.map((r) => JSON.stringify({ at: r.at.toISOString(), round: String(r.round), event: r.event })).join("\n");
     const { rows: rej } = await q("select at, detail from away_events where event in ('rejected', 'arrival') and at >= now() - interval '6 hours' order by seq desc limit 6");
     const out = { log, events: rows.length, rejected: rej.map((r) => `${r.at.toISOString()} ${r.detail}`) };
     return { content: [{ type: "text", text: JSON.stringify(out) }], structuredContent: out };
