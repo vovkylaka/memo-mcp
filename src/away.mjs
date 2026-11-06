@@ -244,11 +244,11 @@ export function registerAwayTools(server) {
     description: "Runs the agent's handling again on a stored course message that is still held, and sends the new reply to its replyUrl. For when the agent's code changed after the message arrived.",
     inputSchema: z.object({ id: z.string().regex(/^m_[\w-]+$/) }),
     outputSchema: z.object({ id: z.string(), status: z.string(), reply: z.string().nullable() }),
-  }, async ({ id }) => {
+  }, async ({ id, force }) => {
     const { rows } = await q("select id, sender, text, reply_url, status from away_messages where id = $1", [id]);
     const m = rows[0];
     if (!m) throw new Error(`no message ${id}`);
-    if (m.status !== "held") throw new Error(`message ${id} is ${m.status}, not held`);
+    if (m.status !== "held" && !force) throw new Error(`message ${id} is ${m.status}, not held`);
     await handle({ id: m.id, sender: m.sender, text: m.text, reply_url: m.reply_url }, process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || "");
     const { rows: [after] } = await q("select status, reply from away_messages where id = $1", [id]);
     const out = { id, status: after.status, reply: after.reply };
