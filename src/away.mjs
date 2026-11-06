@@ -242,7 +242,7 @@ export function registerAwayTools(server) {
   server.registerTool("away_reprocess", {
     title: "Handle a stored message again",
     description: "Runs the agent's handling again on a stored course message that is still held, and sends the new reply to its replyUrl. For when the agent's code changed after the message arrived.",
-    inputSchema: z.object({ id: z.string().regex(/^m_[\w-]+$/) }),
+    inputSchema: z.object({ id: z.string().regex(/^m_[\w-]+$/), force: z.boolean().optional().describe("Also re-handle a message that is no longer held") }),
     outputSchema: z.object({ id: z.string(), status: z.string(), reply: z.string().nullable() }),
   }, async ({ id, force }) => {
     const { rows } = await q("select id, sender, text, reply_url, status from away_messages where id = $1", [id]);
