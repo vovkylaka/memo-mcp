@@ -8,6 +8,7 @@ import { toNodeHandler } from "@modelcontextprotocol/node";
 import { migrate, q, saveFile, fileMeta, fileChunks, readFile } from "./db.mjs";
 import { oauthRouter, verifier, asMetadata, SCOPE } from "./oauth.mjs";
 import { safeFetch } from "./net.mjs";
+import { awayRouter, registerAwayTools, migrateAway } from "./away.mjs";
 import { transcribe, MODEL } from "./transcribe.mjs";
 import { planPage } from "./plan.mjs";
 
@@ -174,6 +175,7 @@ function buildServer(ctx) {
     return result(await transcribe(bytes));
   });
 
+  registerAwayTools(server);
   return server;
 }
 
@@ -289,6 +291,8 @@ app.all("/mcp", bearer, express.json({ limit: MAX_BODY }), (req, res) => {
   return handler(req, res, req.body);
 });
 
+app.use(awayRouter({ base: BASE, ownerPassword: process.env.OWNER_PASSWORD }));
+
 app.use((err, req, res, next) => {
   console.error(err);
   if (res.headersSent) return next(err);
@@ -296,6 +300,7 @@ app.use((err, req, res, next) => {
 });
 
 await migrate();
+await migrateAway();
 app.listen(PORT, () => console.log(`${NAME} on ${BASE} (port ${PORT}); MCP endpoint ${RESOURCE}`));
 
 // Render's free plan stops a service after 15 minutes without inbound traffic, and a cold start
